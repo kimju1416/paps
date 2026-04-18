@@ -554,7 +554,22 @@
 
 <details class="faq">
   <summary>여러 반을 한 번에 처리하려면?</summary>
-  <p>반 하나 작업 끝내고 다운로드 → 반 선택 바꿔서 다음 반 사진 업로드. 혹은 브라우저 탭을 여러 개 열어서 각각 다른 반 작업해도 됩니다.</p>
+  <p>반별로 <b>하나씩 나눠서 처리</b>하는 구조예요:</p>
+  <ol>
+    <li>반 선택을 <b>"1-1반"</b>으로 바꾸고</li>
+    <li>1-1반 사진만 업로드 → 분석 → 검수 → 💾 다운로드</li>
+    <li>반 선택을 <b>"1-2반"</b>으로 바꾸고</li>
+    <li>사진 초기화 → 1-2반 사진만 업로드 → 분석 → 검수 → 다운로드</li>
+    <li>... 계속 반복</li>
+  </ol>
+  <p>혹은 브라우저 탭을 여러 개 열어서 각각 다른 반 작업해도 됩니다.</p>
+</details>
+
+<details class="faq">
+  <summary>⚠ 여러 반 사진을 섞어 올리면 안 되나요?</summary>
+  <p><b>네, 섞어 올리면 데이터가 엉킵니다.</b> 앱은 "지금 선택된 반 명단"을 기준으로 학생 번호를 매칭하기 때문에, 1-1반으로 선택해두고 1-2반 사진을 올리면 <b>1-2반 학생의 값이 1-1반 학생 칸에 들어가게</b> 됩니다.</p>
+  <p><b>자동 감지 기능:</b> 업로드한 사진의 학생 이름이 현재 반 명단과 70% 이상 다르면, 앱이 자동으로 "⚠ 다른 반 사진인 것 같아요" 경고창을 띄웁니다. [취소]를 눌러 중단하고 반 선택을 확인하세요.</p>
+  <p><b>올바른 방법:</b> 반별로 사진을 분류해서 업로드하세요. 한 번에 한 반씩만 처리하면 안전합니다.</p>
 </details>
 
 <details class="faq">
@@ -1540,6 +1555,32 @@ async function runAnalyze(){
       const stats = applyAnalysis(result, klass, p.id);
       totalMatched += stats.matched; totalValues += stats.values;
       okCnt++;
+
+      // 🚨 Cross-class detection: if ≥70% names mismatch, probably wrong class
+      if(stats.totalStudents >= 5 && stats.mismatchedCount / stats.totalStudents >= 0.7){
+        clearInterval(fakeTimer);
+        const pct = Math.round(stats.mismatchedCount / stats.totalStudents * 100);
+        const [g, k] = klass.split("-");
+        const ok = confirm(
+          `⚠ 다른 반 사진인 것 같아요!\n\n` +
+          `"${p.name}" 사진에서 ${stats.totalStudents}명 중 ${stats.mismatchedCount}명(${pct}%)의 이름이 ` +
+          `현재 선택된 "${g}학년 ${k}반" 명단과 달라요.\n\n` +
+          `이 사진이 다른 반 것이거나, 반 선택이 잘못됐을 가능성이 높아요.\n\n` +
+          `[확인] 이대로 계속 진행 (이 반의 값으로 기록)\n` +
+          `[취소] 여기서 분석 중단하고 확인하기 (권장)`
+        );
+        if(!ok){
+          // User chose to stop. Clean up state to avoid polluting current class.
+          log("[다른 반 감지] 사용자 요청으로 분석 중단");
+          setStatus("#analyzeStatus",
+            `⚠ 분석 중단됨 · 반 선택이 맞는지 확인하거나, 올바른 반의 사진만 올려주세요`, "err");
+          $("#btnAnalyze").disabled = false;
+          updateAnalyzeBtn();
+          $("#analyzeProgress").style.display = "none";
+          renderReview();
+          return;
+        }
+      }
     }catch(e){
       console.error(e);
       p.error = translateError(e);
@@ -1612,9 +1653,11 @@ function roundByField(v, f){
 
 function applyAnalysis(result, klass, photoId){
   let matched = 0, values = 0;
-  if(!result || !Array.isArray(result.students)) return {matched, values};
+  let totalStudents = 0, mismatchedCount = 0;
+  if(!result || !Array.isArray(result.students)) return {matched, values, totalStudents, mismatchedCount};
   for(const s of result.students){
     if(s.no == null) continue;
+    totalStudents++;
     const row = state.rows.find(r => `${r.grade}-${r.klass}`===klass && Number(r.no)===Number(s.no));
     if(!row){ log("[skip] 번호 매칭 실패:", s.no, "in", klass); continue; }
 
@@ -1623,6 +1666,7 @@ function applyAnalysis(result, klass, photoId){
     let nameMismatch = false;
     if(s.name && row.name && s.name.trim() && s.name.trim() !== row.name){
       nameMismatch = true;
+      mismatchedCount++;
       log(`[⚠ NAME MISMATCH] #${s.no}: photo="${s.name}" vs 명단="${row.name}" → 행 밀림 의심, 전체 검수 필요`);
     }
     let gotOne = false;
@@ -1688,7 +1732,7 @@ function applyAnalysis(result, klass, photoId){
   // After writing all values: cross-check 1차/2차 pairs for big gaps
   crossCheckPairs();
 
-  return {matched, values};
+  return {matched, values, totalStudents, mismatchedCount};
 }
 
 // Find 1차/2차 pairs by label similarity (same base name, "1차" vs "2차")
